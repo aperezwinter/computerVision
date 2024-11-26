@@ -1,0 +1,13 @@
+numpy
+pandas
+matplotlib==3.7.2
+torch==2.0.1
+torchvision==0.15.2
+torchmetrics==1.1.0
+torchsummary==1.5.1
+pytorch-lightning==2.0.6
+scipy==1.11.3
+albumentations==1.4.21
+pyDOE==0.3.8
+kagglehub
+opencv-python
