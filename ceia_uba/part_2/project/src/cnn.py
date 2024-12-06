@@ -1,4 +1,3 @@
-
 import torch, json, time
 import torch.nn as nn
 import torch.optim as optim
@@ -6,6 +5,38 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 class ConvolutionalBlock(nn.Module):
+    
+    @staticmethod
+    def isOdd(number):
+        return number % 2 != 0
+    
+    @staticmethod
+    def checkConv(kernel_size, stride, padding):
+        if ConvolutionalBlock.isOdd(kernel_size):
+            if padding != (kernel_size - 1) // 2 or stride != 1:
+                raise ValueError(
+                    f"Conv: Invalid padding {padding} or stride {stride} for odd kernel size {kernel_size}."
+                )
+        else:
+            if kernel_size != stride:
+                raise ValueError(
+                    f"Conv: Stride {stride} must be equal to kernel size {kernel_size} for even kernels."
+                )
+
+    @staticmethod
+    def checkPool(kernel_size, stride, padding):        
+        if ConvolutionalBlock.isOdd(kernel_size):
+            if padding != (kernel_size - 1) // 2 or stride != 1:
+                raise ValueError(
+                    f"Pooling: Invalid padding {padding} or stride {stride} for odd kernel size {kernel_size}."
+                )
+        else:
+            if kernel_size != stride:
+                raise ValueError(
+                    f"Pooling: Stride {stride} must be equal to kernel size {kernel_size} for even kernels."
+                )
+    
+    
     def __init__(
             self,
             in_channels: int=1,
@@ -32,20 +63,19 @@ class ConvolutionalBlock(nn.Module):
         self.pool_padding = pool_padding
 
         # Check parameters consistency
-        if kernel_size % 2 == 0:
-            assert kernel_size == stride, f"Conv: Stride {stride} must be equal to  even kernel size {kernel_size}."
-        else:
-            assert ((kernel_size-1) / 2 == padding) & stride == 1, f"Conv: Invalid padding {padding} for the given kernel size {kernel_size}"
-        if pool_kernel_size % 2 == 0:
-            assert pool_kernel_size == pool_stride, f"Pooling: Stride {pool_stride} must be equal to even kernel size {pool_kernel_size}."
-        else:
-            assert ((pool_kernel_size-1) / 2 == pool_padding) & pool_stride == 1, f"Pooling: Invalid padding {pool_padding} for the given kernel size {pool_kernel_size}"
+        ConvolutionalBlock.checkConv(kernel_size, stride, padding)
+        ConvolutionalBlock.checkPool(pool_kernel_size, pool_stride, pool_padding)
 
+        # Define convolution block
         self.conv_block = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, padding_mode=padding_mode),
+            nn.BatchNorm2d(out_channels),
             activation,
             nn.MaxPool2d(pool_kernel_size, pool_stride, pool_padding)
         )
+
+        # Initialize weights
+        self.initialize_weights()
 
     def forward(self, x):
         return self.conv_block(x)
@@ -64,6 +94,22 @@ class ConvolutionalBlock(nn.Module):
         conv_shape = self.getConvOutputShape(in_shape)
         pool_shape = self.getPoolOutputShape(conv_shape)
         return pool_shape
+    
+    def initialize_weights(self):
+        for module in self.modules():
+            if isinstance(module, nn.Conv2d):
+                # Xavier initialization for Sigmoid
+                if isinstance(self.activation, nn.Sigmoid):
+                    nn.init.xavier_uniform_(module.weight)
+                elif isinstance(self.activation, nn.ReLU):
+                    # He initialization for ReLU
+                    nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+            elif isinstance(module, nn.BatchNorm2d):
+                # BatchNorm weights initialized to 1 and biases to 0
+                nn.init.constant_(module.weight, 1)
+                nn.init.constant_(module.bias, 0)
     
 class CNN(nn.Module):
 
@@ -132,8 +178,8 @@ class CNN(nn.Module):
     
     def trainBatch(self, inputs_batch, targets_batch, optimizer):
         if self.device != 'cpu':
-            inputs_batch = inputs_batch.to(self.device, non_blocking=True)
-            targets_batch = targets_batch.to(self.device, non_blocking=True)
+            inputs_batch = inputs_batch.to(self.device)
+            targets_batch = targets_batch.to(self.device)
         predictions_batch = self.forward(inputs_batch)          # forward pass
         loss = self.criterion(predictions_batch, targets_batch) # compute the training loss
         optimizer.zero_grad()                                   # zero the gradients
@@ -156,13 +202,13 @@ class CNN(nn.Module):
         self.eval() # set the model to evaluation mode
         with torch.no_grad():   
             for inputs_batch, targets_batch in dataloader:
+                batch_size = inputs_batch.size(0)
+                samples += batch_size
                 if self.device != 'cpu':
-                    inputs_batch = inputs_batch.to(self.device, non_blocking=True)
-                    targets_batch = targets_batch.to(self.device, non_blocking=True)
-                predictions_batch = self.forward(inputs_batch)                          # forward pass
-                batch_loss = self.criterion(predictions_batch, targets_batch).item()    # compute the loss
-                loss += batch_loss * inputs_batch.size(0)                               # accumulate the weighted loss
-                samples += inputs_batch.size(0)                                         # accumulate the number of samples
+                    inputs_batch = inputs_batch.to(self.device)
+                    targets_batch = targets_batch.to(self.device)
+                predictions_batch = self.forward(inputs_batch)
+                loss += self.criterion(predictions_batch, targets_batch).item() * batch_size
         return loss / samples
     
     def computeAccuracy(self, dataloader):
@@ -173,13 +219,13 @@ class CNN(nn.Module):
                 if self.device != 'cpu':
                     inputs_batch = inputs_batch.to(self.device)
                     targets_batch = targets_batch.to(self.device)
-                predictions_batch = self.forward(inputs_batch)      # forward pass
+                predictions_batch = self.forward(inputs_batch)
                 correct += (predictions_batch.argmax(dim=1) == targets_batch).sum().item()
                 total += inputs_batch.size(0)
         return correct / total
     
     def fit(self, train_dataloader, optimizer=optim.Adam, epochs=30, lr=1e-4, 
-        regularization=0.0, eval_dataloader=None, verbose=True, epch_print=1, 
+        regularization=0.0, val_dataloader=None, verbose=True, epoch_print=1, 
         tolerance=1e-3, patience=5):
 
         # Set the starting epoch
@@ -200,12 +246,6 @@ class CNN(nn.Module):
             self.train()
             for train_batch in train_dataloader:
                 self.trainBatch(train_batch[0], train_batch[1], optimizer)
-                if self.device == "gpu":
-                    torch.cuda.empty_cache()
-                elif self.device == "mps":
-                    torch.mps.empty_cache()
-                else:
-                    pass
 
             # Evaluate the model
             self.eval()
@@ -214,9 +254,9 @@ class CNN(nn.Module):
             self.metrics['epochs'].append(starting_epoch + i)
             self.metrics['loss']['train'].append(train_loss)
             self.metrics['accuracy']['train'].append(train_acc)
-            if eval_dataloader:
-                eval_loss = self.computeLoss(eval_dataloader)
-                eval_acc = self.computeAccuracy(eval_dataloader)
+            if val_dataloader:
+                eval_loss = self.computeLoss(val_dataloader)
+                eval_acc = self.computeAccuracy(val_dataloader)
                 self.metrics['loss']['val'].append(eval_loss)
                 self.metrics['accuracy']['val'].append(eval_acc)
 
@@ -242,9 +282,9 @@ class CNN(nn.Module):
                 epochs_since_improvement = 0
             
             # Print the progress
-            if verbose and (i + 1) % epch_print == 0:
-                eval_loss = eval_loss if eval_dataloader else 'N/A'
-                text = f"Epoch {starting_epoch + i}/{starting_epoch + epochs}: "
+            if verbose and (i + 1) % epoch_print == 0:
+                eval_loss = eval_loss if val_dataloader else 'N/A'
+                text = f"Epoch {starting_epoch + i}/{starting_epoch + epochs - 1}: "
                 text += f"Loss ({train_loss:.4g}, {eval_loss:.4g}) \t "
                 text += f"Accuracy ({100*train_acc:.2f}%, {100*eval_acc:.2f}%)"
                 print(text)
@@ -273,8 +313,8 @@ class CNN(nn.Module):
         f.close()
         self.to(self.device)
 
-    def plotMetrics(self, file_path: str="figures/metrics.png"):
-        fig, axs = plt.subplots(1, 2, figsize=(10, 4))
+    def plotMetrics(self, file_path: str="figures/metrics.png", figsize: tuple=(10, 4), save: bool=False):
+        fig, axs = plt.subplots(1, 2, figsize=figsize)
 
         # Plot loss
         axs[0].plot(self.metrics['epochs'], self.metrics['loss']['train'], label=f"Training")
@@ -283,7 +323,6 @@ class CNN(nn.Module):
         axs[0].set_ylabel("Loss")
         axs[0].legend(loc='best')
         axs[0].grid(True, which='both', linestyle='--', linewidth=0.5)
-        axs[0].set_xticks(np.arange(0, len(self.metrics['epochs'])+1, 10, dtype=int))
 
         # Plot accuracy
         axs[1].plot(self.metrics['epochs'], self.metrics['accuracy']['train'], label=f"Training")
@@ -292,8 +331,11 @@ class CNN(nn.Module):
         axs[1].set_ylabel("Accuracy")
         axs[1].legend(loc='best')
         axs[1].grid(True, which='both', linestyle='--', linewidth=0.5)
-        axs[1].set_xticks(np.arange(0, len(self.metrics['epochs'])+1, 10, dtype=int))
 
         plt.tight_layout()
-        plt.savefig(file_path, dpi=300, facecolor='w', edgecolor='w')
-        plt.close()
+        
+        if save:
+            plt.savefig(file_path, dpi=100, facecolor='w', edgecolor='w')
+            plt.close()
+        else:
+            plt.show()

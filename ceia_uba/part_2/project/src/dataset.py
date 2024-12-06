@@ -61,21 +61,21 @@ class Cards(object):
         inputs, labels = [], []
         for img, label in self.train_data:
             inputs.append(img.type(torch.float32))
-            labels.append(torch.tensor(label, dtype=torch.int8))
+            labels.append(torch.tensor(label, dtype=torch.long))
         self.train_dataset = CardsDataset(inputs, labels)
 
         # Validation dataset
         inputs, labels = [], []
         for img, label in self.valid_data:
             inputs.append(img.type(torch.float32))
-            labels.append(torch.tensor(label, dtype=torch.int8))
+            labels.append(torch.tensor(label, dtype=torch.long))
         self.valid_dataset = CardsDataset(inputs, labels)
 
         # Test dataset
         inputs, labels = [], []
         for img, label in self.test_data:
             inputs.append(img.type(torch.float32))
-            labels.append(torch.tensor(label, dtype=torch.int8))
+            labels.append(torch.tensor(label, dtype=torch.long))
         self.test_dataset = CardsDataset(inputs, labels)
     
     def getDataloaders(self, batch_size: list=[128, 32, 32]):
@@ -158,9 +158,44 @@ class Cards(object):
             self.train_data = augmented_train_data + list(self.train_data)
             self.valid_data = augmented_valid_data + list(self.valid_data)
             self.test_data = augmented_test_data + list(self.test_data)
+            self.n_train = len(self.train_data)
+            self.n_valid = len(self.valid_data)
+            self.n_test = len(self.test_data)
         else:
             return augmented_train_data, augmented_valid_data, augmented_test_data
         
+    def toGrayScale(self, image):
+        image = image.permute(1, 2, 0).cpu().numpy()
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        image = image.astype(np.float32) / 255.0
+        image = torch.from_numpy(image).unsqueeze(0)
+        return image
+    
+    def turnDataset2GrayScale(self):
+        train_data, valid_data, test_data = [], [], []
+
+        for (image, label) in self.train_data:
+            image_bw = self.toGrayScale(image)
+            train_data.append((image_bw, label))
+
+        for (image, label) in self.valid_data:
+            image_bw = self.toGrayScale(image)
+            valid_data.append((image_bw, label))
+
+        for (image, label) in self.test_data:
+            image_bw = self.toGrayScale(image)
+            test_data.append((image_bw, label))
+
+        # Update data
+        self.train_data = train_data
+        self.valid_data = valid_data
+        self.test_data = test_data
+
+        # Refresh image variables
+        self.img_channels = self.train_data[0][0].shape[0]
+        self.img_width = self.train_data[0][0].shape[1]
+        self.img_height = self.train_data[0][0].shape[2]
+    
     def plotAverageImages(self, file_path: str="figures/average_images.png"):
         # Get the images by class
         images_by_class = {i: [] for i in range(self.n_classes)}
